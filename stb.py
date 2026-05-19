@@ -19,7 +19,7 @@ pg.display.set_caption("Gradius-like Shooter")
 main_clock = pg.time.Clock()
 
 # -----------------------------
-# 安全な画像読み込み関数
+# 安全な読み込み関数（画像・音声・BGM）
 # -----------------------------
 def load_image_safe(path):
     if not os.path.exists(path):
@@ -38,6 +38,34 @@ def load_image_safe(path):
         surf = pg.Surface((30, 20))
         surf.fill((255, 80, 80))
         return surf
+
+def load_sound_safe(path):
+    if not os.path.exists(path):
+        print(f"[ERROR] Sound file not found: {path}")
+        return None
+        
+    try:
+        sound = pg.mixer.Sound(path)
+        print(f"[OK] Loaded sound: {path}")
+        return sound
+    except Exception as e:
+        print(f"[ERROR] Cannot load sound: {path}")
+        print("Reason:", e)
+        return None
+
+# ★ 追加: BGM再生用の安全な関数
+def play_bgm_safe(path):
+    if not os.path.exists(path):
+        print(f"[ERROR] BGM file not found: {path}")
+        return
+    try:
+        pg.mixer.music.load(path)
+        pg.mixer.music.set_volume(0.5)  # 音量調整 (0.0 〜 1.0)
+        pg.mixer.music.play(-1)         # -1で無限ループ再生
+        print(f"[OK] Playing BGM: {path}")
+    except Exception as e:
+        print(f"[ERROR] Cannot play BGM: {path}")
+        print("Reason:", e)
 
 # -----------------------------
 # Score（スコア表示）
@@ -81,7 +109,7 @@ class Player(pg.sprite.Sprite):
         self.rect.center = (100, HEIGHT // 2)
 
         self.speed = 5
-        self.dy = 0  # 上下移動の状態
+        self.dy = 0  
 
     def update(self):
         keys = pg.key.get_pressed()
@@ -134,7 +162,7 @@ class Enemy(pg.sprite.Sprite):
         # 画像読み込み
         self.image = load_image_safe("fig/enemy.png")
 
-        # 自動縮小（40%）
+        # 自動縮小（10%）
         w, h = self.image.get_size()
         self.image = pg.transform.smoothscale(self.image, (int(w*0.1), int(h*0.1)))
 
@@ -166,31 +194,73 @@ def draw_background(scroll_x):
         pg.draw.circle(screen, (200, 200, 255), ((x - scroll_x) % WIDTH, y), 2)
 
 # -----------------------------
+# アセットの読み込み（天国画像＆ゲームオーバーSE）
+# -----------------------------
+heaven_raw = load_image_safe("fig/heaven.png")
+heaven_img = pg.transform.smoothscale(heaven_raw, (WIDTH, HEIGHT))
+
+gameover_se = load_sound_safe("BGM/heaven.wav")
+bgm_file = "BGM/背景BGM.mp3"  # ★ 追加: BGMのファイルパス
+
+fade_surface = pg.Surface((WIDTH, HEIGHT))
+fade_surface.fill((255, 255, 255))
+fade_timer = 0
+heaven_timer = 0
+
+# -----------------------------
 # Main Game Loop
 # -----------------------------
 player = Player()
 player_group = pg.sprite.Group(player)
 bullet_group = pg.sprite.Group()
 enemy_group = pg.sprite.Group()
-score = Score()  # ★ スコア追加
+score = Score()
 
 enemy_spawn_timer = 0
 scroll_x = 0
-game_over = False
+
+game_state = "playing" 
 font = pg.font.Font(None, 80)
+font_small = pg.font.Font(None, 40)
+
+# ★ 追加: ゲーム開始時にBGMを再生
+play_bgm_safe(bgm_file)
 
 while True:
     for ev in pg.event.get():
         if ev.type == pg.QUIT:
             pg.quit()
             sys.exit()
-        if not game_over and ev.type == pg.KEYDOWN:
-            if ev.key == pg.K_SPACE:
-                bullet_group.add(Bullet(player.rect.right, player.rect.centery))
+            
+        if ev.type == pg.KEYDOWN:
+            # プレイ中のスペースキー（射撃）
+            if game_state == "playing":
+                if ev.key == pg.K_SPACE:
+                    bullet_group.add(Bullet(player.rect.right, player.rect.centery))
+            
+            # ゲームオーバー中のエンターキー（コンティニュー）
+            elif game_state == "gameover":
+                if ev.key == pg.K_RETURN:  # Enterキー
+                    if gameover_se:
+                        gameover_se.stop()
 
-    if not game_over:
+                    # ゲーム状態をリセット
+                    game_state = "playing"
+                    score.value = 0
+                    scroll_x = 0
+                    enemy_spawn_timer = 0
+                    player.rect.center = (100, HEIGHT // 2)
+                    
+                    # 画面上の敵と弾をすべて消去
+                    enemy_group.empty()
+                    bullet_group.empty()
+
+                    # ★ 追加: コンティニュー時にBGMを再スタート
+                    play_bgm_safe(bgm_file)
+
+    # --- 更新処理 ---
+    if game_state == "playing":
         scroll_x += 3
-
         enemy_spawn_timer += 1
         if enemy_spawn_timer > 40:
             enemy_group.add(Enemy())
@@ -200,29 +270,61 @@ while True:
         bullet_group.update()
         enemy_group.update()
 
-        # 敵と衝突 → ゲームオーバー
+        # 敵と衝突 → フェード処理へ移行
         if pg.sprite.spritecollide(player, enemy_group, True):
-            game_over = True
+            game_state = "fading"
+            fade_timer = 0
+            
+            # ★ 追加: 敵にぶつかったらBGMを止める
+            pg.mixer.music.stop()
 
         # 弾が敵に当たったらスコア加算
         hits = pg.sprite.groupcollide(bullet_group, enemy_group, True, True)
         if hits:
             score.add(100)
 
-    draw_background(scroll_x)
-    player_group.draw(screen)
-    bullet_group.draw(screen)
-    enemy_group.draw(screen)
-    score.draw(screen)  # ★ スコア表示
+    # --- 描画処理 ---
+    if game_state == "playing" or game_state == "fading":
+        draw_background(scroll_x)
+        player_group.draw(screen)
+        bullet_group.draw(screen)
+        enemy_group.draw(screen)
+        score.draw(screen)
 
-    if game_over:
+    # 画面を段々白くする
+    if game_state == "fading":
+        fade_timer += 1
+        alpha = int(255 * (fade_timer / 120))
+        if alpha >= 255:
+            alpha = 255
+            game_state = "heaven" 
+            heaven_timer = 0
+            
+            # 天国の画面に切り替わった瞬間にSEを再生！
+            if gameover_se:
+                gameover_se.play()
+            
+        fade_surface.set_alpha(alpha)
+        screen.blit(fade_surface, (0, 0))
+
+    # 天国の画像を表示する（2秒間）
+    elif game_state == "heaven":
+        screen.blit(heaven_img, (0, 0))
+        heaven_timer += 1
+        
+        # 2秒経ったらゲームオーバー画面へ移行
+        if heaven_timer >= 120: 
+            game_state = "gameover"
+
+    # 天国を表示したまま GAME OVER 文字とコンティニューの案内を出す
+    elif game_state == "gameover":
+        screen.blit(heaven_img, (0, 0))
         txt = font.render("GAME OVER", True, (255, 0, 0))
-        screen.blit(txt, (WIDTH // 2 - 180, HEIGHT // 2 - 40))
+        screen.blit(txt, (WIDTH // 2 - 180, HEIGHT // 2 - 60))
+        
+        # コンティニュー案内テキスト
+        txt_continue = font_small.render("Press ENTER to Continue", True, (0, 0, 0))
+        screen.blit(txt_continue, (WIDTH // 2 - 170, HEIGHT // 2 + 20))
 
     pg.display.update()
     main_clock.tick(60)
-
-
-
-
-
