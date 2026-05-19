@@ -112,12 +112,12 @@ class Player(pg.sprite.Sprite):
 # Bullet
 # -----------------------------
 class Bullet(pg.sprite.Sprite):
-    def __init__(self, x, y):
+    def __init__(self, x, y, speed = 10):
         super().__init__()
         self.image = pg.Surface((10, 4))
         self.image.fill((255, 255, 0))
         self.rect = self.image.get_rect(center=(x, y))
-        self.speed = 10
+        self.speed = speed
 
     def update(self):
         self.rect.x += self.speed
@@ -174,6 +174,24 @@ class PowerUp(pg.sprite.Sprite):
             self.kill()
 
 
+class PowerUp3Way(pg.sprite.Sprite):
+    def __init__(self):
+        super().__init__()
+        self.image = pg.Surface((20, 20))
+        self.image.fill((255, 100, 0))  # オレンジ色のアイテム
+        self.rect = self.image.get_rect()
+
+        self.rect.x = WIDTH + random.randint(0, 200)
+        self.rect.y = random.randint(50, HEIGHT - 50)
+        self.speed = 3
+
+    def update(self):
+        self.rect.x -= self.speed
+        if self.rect.right < 0:
+            self.kill()
+
+
+
 # -----------------------------
 # Background scroll
 # -----------------------------
@@ -190,6 +208,11 @@ powerup_group = pg.sprite.Group()
 powerup_timer = 0
 powerup_active = False
 powerup_end_time = 0
+threeway_group = pg.sprite.Group()
+threeway_timer = 0
+
+threeway_active = False 
+threeway_end_time = 0
 
 # 連射間隔（通常：15フレーム）
 shot_interval = 15
@@ -218,9 +241,18 @@ while True:
         if not game_over and ev.type == pg.KEYDOWN:
             if ev.key == pg.K_SPACE:
                 if shot_timer <= 0:
-                    bullet_group.add(Bullet(player.rect.right, player.rect.centery))
-                    shot_timer = shot_interval
+                    bullet_speed = 10
+
+                    if threeway_active:
+                        # ★★★ 3WAYショット ★★★
+                        bullet_group.add(Bullet(player.rect.right, player.rect.centery, bullet_speed))
+                        bullet_group.add(Bullet(player.rect.right, player.rect.centery - 15, bullet_speed))
+                        bullet_group.add(Bullet(player.rect.right, player.rect.centery + 15, bullet_speed))
+                    else:
+                        # 通常ショット
+                        bullet_group.add(Bullet(player.rect.right, player.rect.centery, bullet_speed))
                     
+                    shot_timer = shot_interval
     if not game_over:
         scroll_x += 3
 
@@ -245,16 +277,36 @@ while True:
 
         powerup_group.update()
 
+        # 3WAYアイテム出現
+        threeway_timer += 1
+        if threeway_timer > 500:  # 出現頻度は調整可
+            threeway_group.add(PowerUp3Way())
+            threeway_timer = 0
+
+        threeway_group.update()
+
+
         # プレイヤーがパワーアップ取得
         if pg.sprite.spritecollide(player, powerup_group, True):
             powerup_active = True
-            shot_interval = 0  # ★ 連射速度アップ！
+            shot_interval = 1  # ★ 連射速度アップ！
             powerup_end_time = pg.time.get_ticks() + 8000  # 8秒間
+
+        # 3WAYアイテム取得
+        if pg.sprite.spritecollide(player, threeway_group, True):   
+            threeway_active = True
+            threeway_end_time = pg.time.get_ticks() + 8000  # 8秒間
+
 
         # 効果時間が切れたら戻す
         if powerup_active and pg.time.get_ticks() > powerup_end_time:
             powerup_active = False
             shot_interval = 15
+
+        # 3WAY効果終了
+        if threeway_active and pg.time.get_ticks() > threeway_end_time:
+            threeway_active = False
+
 
 
         # 敵と衝突 → ゲームオーバー
@@ -271,6 +323,7 @@ while True:
     bullet_group.draw(screen)
     enemy_group.draw(screen)
     powerup_group.draw(screen)
+    threeway_group.draw(screen)
     score.draw(screen)  # ★ スコア表示
 
     if game_over:
