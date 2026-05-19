@@ -128,7 +128,7 @@ class Bullet(pg.sprite.Sprite):
 # Enemy（画像読み込み＋自動縮小）
 # -----------------------------
 class Enemy(pg.sprite.Sprite):
-    def __init__(self):
+    def __init__(self, stage=1):
         super().__init__()
 
         # 画像読み込み
@@ -146,12 +146,90 @@ class Enemy(pg.sprite.Sprite):
         self.rect = self.image.get_rect()
         self.rect.x = WIDTH + random.randint(0, 200)
         self.rect.y = random.randint(20, HEIGHT - 20)
-        self.speed = random.randint(3, 6)
+        base = 3 + (stage - 1)
+        self.speed = random.randint(base, base + 3)
 
     def update(self):
         self.rect.x -= self.speed
         if self.rect.right < 0:
             self.kill()
+
+# -----------------------------
+# EnemyBullet（ボスがプレイヤー側に撃つ弾）
+# -----------------------------
+class EnemyBullet(pg.sprite.Sprite):
+    def __init__(self, x, y, speed=7):
+        super().__init__()
+        self.image = pg.Surface((12, 6))
+        self.image.fill((255, 80, 80))
+        self.rect = self.image.get_rect(center=(x, y))
+        self.speed = speed
+
+    def update(self):
+        self.rect.x -= self.speed
+        if self.rect.right < 0:
+            self.kill()
+
+# -----------------------------
+# Boss（HP制・上下移動・定期発射、ステージごとに難易度UP）
+# -----------------------------
+class Boss(pg.sprite.Sprite):
+    BASE_HP = 15
+
+    def __init__(self, bullet_group, stage=1):
+        super().__init__()
+        img = load_image_safe("fig/boss.png")
+        w, h = img.get_size()
+        target_h = 240
+        s = target_h / h if h else 1
+        self.image = pg.transform.smoothscale(img, (max(1, int(w * s)), max(1, int(h * s))))
+        try:
+            self.image = self.image.convert_alpha()
+        except Exception:
+            pass
+
+        self.rect = self.image.get_rect()
+        self.target_x = WIDTH - 40 - self.rect.width
+        self.rect.x = WIDTH + 10
+        self.rect.centery = HEIGHT // 2
+
+        self.stage = stage
+        self.max_hp = Boss.BASE_HP + (stage - 1) * 5
+        self.hp = self.max_hp
+        self.dy = 2 + (stage - 1)
+        self.bullet_speed = 7 + (stage - 1)
+        self.shoot_interval = max(15, 50 - (stage - 1) * 5)
+        self.shoot_timer = 0
+        self.entering = True
+        self.bullet_group = bullet_group
+
+    def update(self):
+        if self.entering:
+            if self.rect.x > self.target_x:
+                self.rect.x -= 4
+                return
+            self.rect.x = self.target_x
+            self.entering = False
+            return
+
+        self.rect.y += self.dy
+        if self.rect.top <= 40:
+            self.rect.top = 40
+            self.dy = abs(self.dy)
+        elif self.rect.bottom >= HEIGHT - 10:
+            self.rect.bottom = HEIGHT - 10
+            self.dy = -abs(self.dy)
+
+        self.shoot_timer += 1
+        if self.shoot_timer >= self.shoot_interval:
+            self.shoot_timer = 0
+            self.bullet_group.add(
+                EnemyBullet(self.rect.left, self.rect.centery, speed=self.bullet_speed)
+            )
+
+    def hit(self):
+        self.hp -= 1
+        return self.hp <= 0
 
 # -----------------------------
 # Background scroll
@@ -172,12 +250,31 @@ player = Player()
 player_group = pg.sprite.Group(player)
 bullet_group = pg.sprite.Group()
 enemy_group = pg.sprite.Group()
+enemy_bullet_group = pg.sprite.Group()  # ★ ボスの弾
+boss_group = pg.sprite.Group()           # ★ ボス
 score = Score()  # ★ スコア追加
 
 enemy_spawn_timer = 0
 scroll_x = 0
 game_over = False
+boss = None                               # ★ ボス参照
+stage = 1                                 # ★ 現在のステージ
+stage_kills = 0                           # ★ 現ステージのザコ撃破数
+clear_timer = 0                           # ★ クリア演出残フレーム
+CLEAR_FRAMES = 150                        # ★ クリア演出の長さ
 font = pg.font.Font(None, 80)
+boss_label_font = pg.font.Font(None, 24)
+stage_font = pg.font.Font(None, 36)
+
+
+def kill_quota(s):
+    """ステージsでボスが出現するために必要なザコ撃破数"""
+    return 5 + (s - 1) * 2
+
+
+def spawn_interval(s):
+    """ステージsのザコスポーン間隔（フレーム）"""
+    return max(12, 40 - (s - 1) * 4)
 
 while True:
     for ev in pg.event.get():
@@ -191,33 +288,110 @@ while True:
     if not game_over:
         scroll_x += 3
 
-        enemy_spawn_timer += 1
-        if enemy_spawn_timer > 40:
-            enemy_group.add(Enemy())
-            enemy_spawn_timer = 0
+        # ★ クリア演出中：カウントダウンが終わったら次ステージのザコフェーズへ
+        if clear_timer > 0:
+            clear_timer -= 1
+            if clear_timer == 0:
+                stage += 1
+                stage_kills = 0
+                enemy_group.empty()
+                enemy_bullet_group.empty()
+                enemy_spawn_timer = 0
+
+        # ★ ボス出現：ザコをノルマ分倒したら登場
+        if boss is None and clear_timer == 0 and stage_kills >= kill_quota(stage):
+            enemy_group.empty()
+            boss = Boss(enemy_bullet_group, stage=stage)
+            boss_group.add(boss)
+
+        # ★ ボス/演出が無いときだけザコをスポーン（ノルマ未達成まで）
+        if boss is None and clear_timer == 0 and stage_kills < kill_quota(stage):
+            enemy_spawn_timer += 1
+            if enemy_spawn_timer > spawn_interval(stage):
+                enemy_group.add(Enemy(stage=stage))
+                enemy_spawn_timer = 0
 
         player_group.update()
         bullet_group.update()
         enemy_group.update()
+        enemy_bullet_group.update()
+        boss_group.update()
 
         # 敵と衝突 → ゲームオーバー
         if pg.sprite.spritecollide(player, enemy_group, True):
             game_over = True
 
-        # 弾が敵に当たったらスコア加算
+        # ★ 敵弾と衝突 → ゲームオーバー
+        if pg.sprite.spritecollide(player, enemy_bullet_group, True):
+            game_over = True
+
+        # ★ ボス本体と衝突（出現演出中は無効）→ ゲームオーバー
+        if boss is not None and not boss.entering:
+            if pg.sprite.spritecollide(player, boss_group, False):
+                game_over = True
+
+        # 弾が敵に当たったらスコア加算＆ノルマ進行
         hits = pg.sprite.groupcollide(bullet_group, enemy_group, True, True)
         if hits:
-            score.add(100)
+            killed = sum(len(v) for v in hits.values())
+            score.add(100 * killed)
+            stage_kills += killed
+
+        # ★ 弾がボスに当たったらHP減少
+        if boss is not None:
+            boss_hits = pg.sprite.groupcollide(bullet_group, boss_group, True, False)
+            for _bullet, hit_bosses in boss_hits.items():
+                for b in hit_bosses:
+                    if b.hit():
+                        b.kill()
+                        score.add(1000 * stage)
+                        boss = None
+                        enemy_bullet_group.empty()  # 残弾も掃除
+                        clear_timer = CLEAR_FRAMES   # クリア演出開始
+                    else:
+                        score.add(50)
 
     draw_background(scroll_x)
     player_group.draw(screen)
     bullet_group.draw(screen)
     enemy_group.draw(screen)
+    enemy_bullet_group.draw(screen)  # ★
+    boss_group.draw(screen)           # ★
     score.draw(screen)  # ★ スコア表示
+
+    # ★ STAGE 表示（右上）＋ ザコフェーズ中は進捗表示
+    stage_txt = stage_font.render(f"STAGE {stage}", True, (255, 255, 255))
+    screen.blit(stage_txt, (WIDTH - stage_txt.get_width() - 10, 10))
+    if boss is None and clear_timer == 0:
+        prog = boss_label_font.render(
+            f"KILLS {min(stage_kills, kill_quota(stage))}/{kill_quota(stage)}",
+            True, (255, 220, 100)
+        )
+        screen.blit(prog, (WIDTH - prog.get_width() - 10, 44))
+
+    # ★ ボスHPバー
+    if boss is not None and boss.alive() and not boss.entering:
+        bar_w, bar_h = 320, 14
+        bar_x = WIDTH // 2 - bar_w // 2
+        bar_y = 50
+        ratio = max(0.0, boss.hp / boss.max_hp)
+        pg.draw.rect(screen, (60, 60, 60), (bar_x, bar_y, bar_w, bar_h))
+        pg.draw.rect(screen, (255, 60, 60), (bar_x, bar_y, int(bar_w * ratio), bar_h))
+        pg.draw.rect(screen, (255, 255, 255), (bar_x, bar_y, bar_w, bar_h), 2)
+        label = boss_label_font.render(f"BOSS  STAGE {boss.stage}", True, (255, 255, 255))
+        screen.blit(label, (bar_x, bar_y - 22))
 
     if game_over:
         txt = font.render("GAME OVER", True, (255, 0, 0))
         screen.blit(txt, (WIDTH // 2 - 180, HEIGHT // 2 - 40))
+
+    # ★ ステージクリア演出（エンドレス：次ボス出現までのインターバル）
+    if clear_timer > 0:
+        clear_txt = font.render(f"STAGE {stage} CLEAR!", True, (255, 220, 0))
+        screen.blit(clear_txt, (WIDTH // 2 - clear_txt.get_width() // 2, HEIGHT // 2 - 60))
+        if clear_timer < CLEAR_FRAMES // 2:
+            nxt = stage_font.render(f"NEXT: STAGE {stage + 1}", True, (255, 255, 255))
+            screen.blit(nxt, (WIDTH // 2 - nxt.get_width() // 2, HEIGHT // 2 + 20))
 
     pg.display.update()
     main_clock.tick(60)
