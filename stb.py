@@ -96,6 +96,9 @@ class Player(pg.sprite.Sprite):
         self.speed = 5
         self.dy = 0  # 上下移動の状態
 
+        self.shield = False  # シールド状態
+        self.shield_stock = 3  # シールドストック（残り数）を追加
+
     def update(self):
         keys = pg.key.get_pressed()
         self.dy = 0
@@ -121,6 +124,16 @@ class Player(pg.sprite.Sprite):
 
         self.rect.clamp_ip(screen.get_rect())
 
+    def draw_shield(self, surface):
+
+        font = pg.font.Font(None, 30)
+
+        txt = font.render(f"Shield: {self.shield_stock}",True,(0, 255, 255))
+
+        surface.blit(txt, (10, 50))
+
+        if self.shield:pg.draw.circle(surface,(0, 255, 255),self.rect.center,40,3) # シールド描画追加
+
 # -----------------------------
 # Bullet
 # -----------------------------
@@ -136,6 +149,27 @@ class Bullet(pg.sprite.Sprite):
         self.rect.x += self.speed
         if self.rect.x > WIDTH:
             self.kill()
+
+# =========================================================
+# ★追加：Laser（貫通レーザー）
+# =========================================================
+class Laser(pg.sprite.Sprite):
+    def __init__(self, x, y):
+        super().__init__()
+
+        # レーザー画像
+        self.image = pg.Surface((120, 12))
+        self.image.fill((0, 255, 255))
+
+        self.rect = self.image.get_rect(midleft=(x, y))
+
+        self.speed = 18
+
+    def update(self):
+        self.rect.x += self.speed
+
+        if self.rect.left > WIDTH:
+            self.kill()     
 
 # -----------------------------
 # Enemy（画像読み込み＋自動縮小）
@@ -251,6 +285,7 @@ bullet_group = pg.sprite.Group()
 enemy_group = pg.sprite.Group()
 chaser_enemy_group = pg.sprite.Group()    # 追従型敵グループ
 wavy_enemy_group = pg.sprite.Group()    # うねうね敵グループ
+laser_group = pg.sprite.Group()  # レーザーグループ追加
 score = Score()  # ★ スコア追加
 
 
@@ -258,6 +293,8 @@ enemy_spawn_timer = 0
 scroll_x = 0
 game_over = False
 font = pg.font.Font(None, 80)
+
+laser_cooldown = 0  # レーザーのクールダウンタイマー
 
 while True:
     for ev in pg.event.get():
@@ -267,9 +304,21 @@ while True:
         if not game_over and ev.type == pg.KEYDOWN:
             if ev.key == pg.K_SPACE:
                 bullet_group.add(Bullet(player.rect.right, player.rect.centery))
+            elif ev.key == pg.K_x and laser_cooldown <= 0:  # xキーでレーザー発射
+                laser_group.add(Laser(player.rect.right, player.rect.centery))
+                laser_cooldown = 60  # 1秒のクールダウン
+
+            if ev.key == pg.K_s:  # sキーでシールドON/OFF
+                if player.shield_stock > 0 and not player.shield:  # シールドストックがあって、現在シールドがない場合
+                    player.shield = True
+                    player.shield_stock -= 1
 
     if not game_over:
         scroll_x += 3
+
+        # レーザークールダウン減少
+        if laser_cooldown > 0:
+            laser_cooldown -= 1
 
         enemy_spawn_timer += 1
         if enemy_spawn_timer > 40:
@@ -284,21 +333,44 @@ while True:
 
         player_group.update()
         bullet_group.update()
+        laser_group.update()  # レーザーも更新
         enemy_group.update()
 
         chaser_enemy_group.update(player.rect)
         wavy_enemy_group.update()
 
-        # 敵と衝突 → ゲームオーバー
+        # 敵と衝突 → ゲームオーバー シールド判定追加、被弾処理変更
+        # 通常敵と衝突
         if pg.sprite.spritecollide(player, enemy_group, True):
-            game_over = True
-            pg.mixer.music.stop()   #  BGM停止
+
+            # シールドあり
+            if player.shield:
+                player.shield = False
+
+            # シールドなし
+            else:
+                game_over = True
+                pg.mixer.music.stop()
+
+        # 追従敵と衝突
         if pg.sprite.spritecollide(player, chaser_enemy_group, True):
-            game_over = True
-            pg.mixer.music.stop()   #  BGM停止
+
+            if player.shield:
+                player.shield = False
+
+            else:
+                game_over = True
+                pg.mixer.music.stop()
+
+        # うねうね敵と衝突
         if pg.sprite.spritecollide(player, wavy_enemy_group, True):
-            game_over = True
-            pg.mixer.music.stop()   #  BGM停止
+
+            if player.shield:
+                player.shield = False
+
+            else:
+                game_over = True
+                pg.mixer.music.stop()
         # 弾が敵に当たったらスコア加算
         hits = pg.sprite.groupcollide(bullet_group, enemy_group, True, True)
         if hits:
@@ -309,10 +381,22 @@ while True:
         hits3 = pg.sprite.groupcollide(bullet_group, wavy_enemy_group, True, True)
         if hits3:
             score.add(150)
+        # レーザーが敵に当たったらスコア加算
+        laser_hits = pg.sprite.groupcollide(laser_group, enemy_group, False, True)
+        if laser_hits:
+            score.add(100)
+        laser_hits2 = pg.sprite.groupcollide(laser_group, chaser_enemy_group, False, True)
+        if laser_hits2:
+            score.add(50)
+        laser_hits3 = pg.sprite.groupcollide(laser_group, wavy_enemy_group, False, True)
+        if laser_hits3:
+            score.add(150)
 
     draw_background(scroll_x)
     player_group.draw(screen)
+    player.draw_shield(screen)  # シールド描画
     bullet_group.draw(screen)
+    laser_group.draw(screen) # レーザー描画
     enemy_group.draw(screen)
     chaser_enemy_group.draw(screen)  # 追従型敵の描画
     wavy_enemy_group.draw(screen)  # うねうね敵の描画
